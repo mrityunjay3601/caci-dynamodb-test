@@ -1,0 +1,152 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Lambda Function Triggered by S3 Bucket
+
+Resources:
+  
+  MyLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: caci-delete-from-dynamodb-function
+      Handler: app.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: cf-s3-bucket-4
+        S3Key: lambda.zip
+      Runtime: python3.8
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable 
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole-caci-delete-from-dynamodb
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+       
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: arn:aws:s3:::cf-s3-bucket-4/*
+        - PolicyName: DynamoDBFullAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:*
+                Resource: "*"
+        - PolicyName: CloudWatchFullAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: "*"
+        - PolicyName: CloudWatchLogsFullAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: "*"
+  
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: caci-dynamodb
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      DeletionProtectionEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  MyApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: caci-delete-from-dynamodb-api
+
+  ApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MyLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+
+  ApiGatewayAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      RestApiId: !Ref MyApiGateway
+      Name: caci-delete-from-dynamodb-autorizer
+      Type: TOKEN
+      IdentitySource: 'method.request.header.Authorization'
+      IdentityValidationExpression: "^Bearer allowme$"
+      AuthorizerUri: !Sub
+        arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MyLambdaFunction.Arn}/invocations
+      AuthorizerCredentials: !GetAtt LambdaExecutionRole.Arn
+
+  MyRequestValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      Name: caci-delete-from-dynamodb-validator
+      RestApiId: !Ref MyApiGateway
+      ValidateRequestBody: true   # Set to false to skip request body validation
+      ValidateRequestParameters: true
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      HttpMethod: DELETE
+      ResourceId: !GetAtt MyApiGateway.RootResourceId
+      RestApiId: !Ref MyApiGateway
+      RequestParameters:
+        method.request.header.Authorization: true
+      RequestValidatorId: !Ref MyRequestValidator  # Reference the Request Validator resource
+
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MyLambdaFunction.Arn}/invocations
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            StatusCode: 200
+
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+          ResponseModels:
+            "application/json": "Empty"
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayMethod
+    Properties:
+      RestApiId: !Ref MyApiGateway
